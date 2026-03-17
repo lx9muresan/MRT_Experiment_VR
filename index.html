@@ -1,0 +1,1529 @@
+<!--
+================================================================
+  VR MENTAL ROTATION TEST — Meta Quest 3  (mrt-vr-3)
+  Based on mrt-vr-2.html
+
+  Changes over mrt-vr-2:
+    1. HUD and selection panels moved -0.5m on X to align with target shape
+    2. Option cells scaled down (0.55×) with tighter grid offsets
+    3. Submit button repositioned to centre of 2×2 options grid
+================================================================
+
+  USAGE OPTION A — Quest Browser (no install needed):
+    1. Host this file on any HTTPS server
+    2. Open the URL in Meta Quest Browser
+    3. Enter your Participant ID, then tap "Enter VR"
+
+  USAGE OPTION B — Sideloaded APK (Android Studio):
+    Requirements:
+      - Android Studio Hedgehog (2023.1+) or later
+      - Android SDK 33 + JDK 17
+      - Meta Quest 3 with Developer Mode enabled
+
+    Steps:
+      1. Enable Developer Mode on Quest 3:
+         Settings -> About -> tap "Build Number" 7 times
+         Then: Settings -> Developer -> USB Debugging ON
+      2. Copy this file to:
+         quest-apk/app/src/main/assets/mrt-vr.html
+      3. Open quest-apk/ in Android Studio
+         (File -> Open -> select quest-apk folder)
+      4. Connect Quest 3 via USB cable
+      5. In Android Studio: Run -> Run 'app'  (or Shift+F10)
+         This builds a debug APK and installs it automatically
+      6. To build a release APK:
+         Build -> Generate Signed Bundle/APK -> APK -> follow wizard
+      7. Manual ADB install (alternative):
+         adb install -r app/build/outputs/apk/debug/app-debug.apk
+
+    After install: the app appears in Quest 3 app library
+    (check "Unknown Sources" if not visible)
+
+  RETRIEVING DATA:
+    JSON/CSV files save to Quest Downloads folder.
+    Retrieve via ADB:
+      adb pull /sdcard/Download/ ./downloads/
+
+  PARTICIPANT ID:
+    Enter participant ID in the pre-VR HTML overlay before tapping
+    "Enter VR". The ID is saved to session.participantId and included
+    in all exported JSON/CSV files.
+
+  CONTROLLER MAPPING (Meta Quest Touch / Touch Pro):
+    Trigger button (index finger)  -> Select option / press button
+    Grip button  (middle finger)   -> Grab + rotate target figure
+    Left thumbstick                -> Rotate target figure (alternative to grab)
+    Both controllers work for trigger and grip functions.
+
+  HAND TRACKING:
+    Index + thumb pinch  -> Select option / press button
+    Make a fist          -> Grab + rotate target figure
+    Enabled automatically if headset supports hand tracking.
+================================================================
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VR Mental Rotation Test — Quest 3 (mrt-vr-3)</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+canvas#c {
+  position: fixed; top: 0; left: 0;
+  width: 100%; height: 100%;
+  display: block;
+}
+#fallback {
+  position: fixed; inset: 0;
+  background: #111;
+  color: #eee;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  text-align: center;
+  padding: 32px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+  z-index: 10;
+}
+#fallback h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+#fallback p {
+  color: #aaa;
+  line-height: 1.7;
+  font-size: 1rem;
+  max-width: 480px;
+}
+#enter-vr-btn {
+  margin-top: 12px;
+  padding: 14px 40px;
+  background: #ffffff;
+  color: #111;
+  border: none;
+  border-radius: 8px;
+  font-size: 1.1rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+#enter-vr-btn:hover:not(:disabled) { opacity: 0.85; }
+#enter-vr-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+#pid-wrap {
+  display: flex; flex-direction: column; gap: 8px;
+  align-items: flex-start; width: 100%; max-width: 320px;
+}
+#pid-wrap label { color: #aaa; font-size: 0.9rem; }
+#pid-vr {
+  width: 100%; padding: 10px 14px;
+  border-radius: 6px; border: 2px solid #444;
+  background: #222; color: #eee;
+  font-size: 1rem; font-family: inherit;
+  outline: none; transition: border-color 0.15s;
+}
+#pid-vr:focus { border-color: #4a90e2; }
+</style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<div id="fallback">
+  <h1>VR Mental Rotation Test</h1>
+  <p>
+    This application requires a Meta Quest 3 headset with WebXR support.<br>
+    Enter your Participant ID below, then tap Enter VR.
+  </p>
+  <div id="pid-wrap">
+    <label for="pid-vr">Participant ID</label>
+    <input id="pid-vr" type="text" placeholder="e.g. P001" autocomplete="off" />
+  </div>
+  <button id="enter-vr-btn">Enter VR</button>
+</div>
+
+<script>
+'use strict';
+
+/* ================================================================
+   RESEARCHER CONFIGURATION
+   Edit these values before running the experiment.
+   ================================================================ */
+const CONFIG = {
+  SEED:                  42,
+  TRIALS_PER_BLOCK:      5,
+  TIME_LIMIT_SECONDS:    300,
+  REST_SECONDS:          60,
+  PRACTICE_ENABLED:      true,
+  PRACTICE_TRIALS:       2,
+  ROTATION_ENABLED:      true,
+  FIXATION_CROSS:        true,
+  FIXATION_MS:           500,
+  PARTICIPANT_ID_PROMPT: true,
+  // VR-specific
+  VR_FIGURE_SCALE:       0.10,
+  VR_OPTION_SCALE:       0.07,
+  VR_GRAB_RADIUS:        0.35,
+};
+
+/* ================================================================
+   SHEPARD-METZLER FIGURE DEFINITIONS
+   Each figure is an ordered list of 10 [x,y,z] cube positions.
+   ================================================================ */
+const BASE_FIGURES = [
+  // F0 — Z-fold: right, turn up, extend forward
+  [[0,0,0],[1,0,0],[2,0,0],[2,1,0],[2,2,0],[2,2,1],[2,2,2],[3,2,2],[4,2,2],[4,3,2]],
+  // F1 — S-curve: up, turn right, turn back, drop down, exit right
+  [[0,0,0],[0,1,0],[0,2,0],[1,2,0],[2,2,0],[2,2,1],[2,2,2],[2,1,2],[2,0,2],[3,0,2]],
+  // F2 — Right-angle arm: long right run, turn up, turn into page
+  [[0,0,0],[1,0,0],[2,0,0],[3,0,0],[3,1,0],[3,2,0],[3,2,1],[3,2,2],[3,2,3],[2,2,3]],
+  // F3 — Staircase into depth: forward run, turn up, turn right
+  [[0,0,0],[0,0,1],[0,0,2],[0,1,2],[0,2,2],[1,2,2],[2,2,2],[2,2,1],[2,2,0],[2,3,0]],
+  // F4 — Tall spiral: up run, turn deep, turn left, continue up
+  [[0,0,0],[1,0,0],[1,1,0],[1,2,0],[1,3,0],[1,3,1],[1,3,2],[0,3,2],[0,3,3],[0,3,4]],
+  // F5 — Cross-axis wrap: forward, turn right, turn up, backtrack in Z
+  [[0,0,0],[0,0,1],[0,0,2],[0,0,3],[1,0,3],[2,0,3],[2,1,3],[2,2,3],[2,2,2],[2,2,1]],
+  // F6 — Double-bend: right, dive into page, climb up, retreat left
+  [[0,0,0],[1,0,0],[2,0,0],[2,0,1],[2,0,2],[2,1,2],[2,2,2],[1,2,2],[0,2,2],[0,2,3]],
+  // F7 — Long arm: up, extend into page, continue right
+  [[0,0,0],[0,1,0],[0,2,0],[0,2,1],[0,2,2],[1,2,2],[2,2,2],[2,2,3],[2,2,4],[3,2,4]],
+  // F8 — Zigzag through 3 axes
+  [[0,0,0],[1,0,0],[1,0,1],[1,0,2],[1,1,2],[1,2,2],[1,2,3],[1,2,4],[2,2,4],[3,2,4]],
+  // F9 — Spiral-step: deep, turn right, climb, turn back
+  [[0,0,0],[0,0,1],[0,0,2],[1,0,2],[2,0,2],[2,1,2],[2,2,2],[2,3,2],[2,3,1],[2,3,0]],
+  // F10 — Reversed C with depth
+  [[0,0,0],[0,1,0],[0,2,0],[0,3,0],[1,3,0],[2,3,0],[2,3,1],[2,3,2],[1,3,2],[0,3,2]],
+  // F11 — Diagonal ladder
+  [[0,0,0],[1,0,0],[1,1,0],[1,1,1],[1,1,2],[2,1,2],[3,1,2],[3,2,2],[3,3,2],[3,3,1]],
+];
+
+/* ================================================================
+   SESSION STATE
+   ================================================================ */
+const session = {
+  participantId:  '',
+  startTime:      null,
+  currentBlock:   'practice',
+  trialIndex:     0,
+  practiceTrials: [],
+  blockATrials:   [],
+  blockBTrials:   [],
+  allTrials:      [],
+  trialStartMs:   0,
+  currentTrial:   null,
+  timerIv:        null,
+  restIv:         null,
+};
+
+/* ================================================================
+   SEEDED PRNG — Mulberry32
+   ================================================================ */
+function mulberry32(seed) {
+  return function() {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+let rng = mulberry32(0);
+
+/* ================================================================
+   UTILITY: uniform random quaternion (Shoemake 1992)
+   ================================================================ */
+function randomQuat() {
+  const u1 = rng(), u2 = rng(), u3 = rng();
+  return new THREE.Quaternion(
+    Math.sqrt(1-u1) * Math.sin(2*Math.PI*u2),
+    Math.sqrt(1-u1) * Math.cos(2*Math.PI*u2),
+    Math.sqrt(u1)   * Math.sin(2*Math.PI*u3),
+    Math.sqrt(u1)   * Math.cos(2*Math.PI*u3)
+  ).normalize();
+}
+
+/* Fisher-Yates shuffle (in-place) */
+function shuffle(arr) {
+  for (let i = arr.length-1; i > 0; i--) {
+    const j = Math.floor(rng()*(i+1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/* ================================================================
+   TRIAL GENERATION
+   ================================================================ */
+function makeTrial(figIdx, isPractice, num, block) {
+  const slots = shuffle([0,1,2,3]);
+  const correctSlots = [slots[0], slots[1]];
+  const wrongSlots   = [slots[2], slots[3]];
+  const optQuats = [randomQuat(), randomQuat(), randomQuat(), randomQuat()];
+  return {
+    figIdx,
+    positions:     BASE_FIGURES[figIdx],
+    targetQuat:    randomQuat(),
+    options: optQuats.map((q, i) => ({
+      quat:     q,
+      mirrored: wrongSlots.includes(i),
+    })),
+    correctSlots,
+    selectedSlots: [],
+    responseMs:   null,
+    correct:      null,
+    isPractice,
+    trialNum:     num,
+    block,
+  };
+}
+
+function generateTrials() {
+  rng = mulberry32(CONFIG.SEED);
+  session.practiceTrials = [];
+  session.blockATrials   = [];
+  const pool = shuffle([...Array.from({length: BASE_FIGURES.length}, (_,i) => i)]);
+  let p = 0;
+  const pick = () => { const v = pool[p % pool.length]; p++; return v; };
+
+  if (CONFIG.PRACTICE_ENABLED) {
+    for (let i = 0; i < CONFIG.PRACTICE_TRIALS; i++)
+      session.practiceTrials.push(makeTrial(pick(), true, i+1, 'practice'));
+  }
+  for (let i = 0; i < CONFIG.TRIALS_PER_BLOCK; i++)
+    session.blockATrials.push(makeTrial(pick(), false, i+1, 'A'));
+
+  // Researcher verification: compare with mrt-3D.html console output to confirm sequences match
+  console.log('VR blockA figIdx sequence:', session.blockATrials.map(t => t.figIdx));
+}
+
+/* ================================================================
+   DATA EXPORT HELPERS
+   ================================================================ */
+function computeMedian(arr) {
+  const s = [...arr].sort((a,b)=>a-b);
+  const m = Math.floor(s.length/2);
+  return s.length % 2 ? s[m] : (s[m-1]+s[m])/2;
+}
+
+function buildLog() {
+  const aTrials = session.allTrials.filter(t => t.block === 'A');
+  return {
+    schema_version:   '1.0',
+    condition:        'vr',
+    participant_id:   session.participantId,
+    session_start:    session.startTime,
+    session_end:      new Date().toISOString(),
+    config:           { ...CONFIG },
+    scores: {
+      block_A:      aTrials.filter(t=>t.correct).length,
+      total:        aTrials.filter(t=>t.correct).length,
+      max_possible: CONFIG.TRIALS_PER_BLOCK,
+    },
+    reaction_times: {
+      mean_ms:   Math.round(
+        session.allTrials.filter(t=>!t.isPractice && t.responseMs)
+          .reduce((s,t,_,a) => s + t.responseMs/a.length, 0)),
+      median_ms: computeMedian(
+        session.allTrials.filter(t=>!t.isPractice && t.responseMs).map(t=>t.responseMs)),
+    },
+    strategy_response: 'VR condition — text input unavailable',
+    trials: session.allTrials.map(t => ({
+      block:                 t.block,
+      trial_number:          t.trialNum,
+      figure_id:             t.figIdx,
+      correct_option_slots:  t.correctSlots,
+      selected_option_slots: t.selectedSlots,
+      options_mirrored:      t.options.map(o => o.mirrored),
+      response_time_ms:      t.responseMs,
+      is_correct:            t.correct,
+      is_practice:           t.isPractice,
+    })),
+  };
+}
+
+function exportJSON() {
+  const blob = new Blob([JSON.stringify(buildLog(), null, 2)], { type: 'application/json' });
+  dl(blob, `mrt_${session.participantId}_${ts()}.json`);
+}
+
+function exportCSV() {
+  const hdr = ['block','trial_number','figure_id','correct_slots','selected_slots',
+                'response_time_ms','is_correct','opt0_mirror','opt1_mirror','opt2_mirror','opt3_mirror'];
+  const rows = session.allTrials
+    .filter(t => !t.isPractice)
+    .map(t => [
+      t.block, t.trialNum, t.figIdx,
+      `"${t.correctSlots.join(';')}"`, `"${t.selectedSlots.join(';')}"`,
+      t.responseMs, t.correct ? 1 : 0,
+      ...t.options.map(o => o.mirrored ? 1 : 0),
+    ]);
+  const csv = [hdr, ...rows].map(r => r.join(',')).join('\n');
+  dl(new Blob([csv], {type:'text/csv'}), `mrt_${session.participantId}_${ts()}.csv`);
+}
+
+function dl(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a   = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 150);
+}
+function ts() { return new Date().toISOString().replace(/[:.]/g,'-').slice(0,19); }
+
+/* ================================================================
+   THREE.JS SCENE SETUP
+   ================================================================ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x555555);   // medium grey
+
+const camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.01, 100);
+camera.position.set(0, 1.6, 0);
+scene.add(camera);
+
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');
+
+// Lighting
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.9);
+dirLight.position.set(3, 8, 5);
+scene.add(dirLight);
+
+// Floor grid
+scene.add(new THREE.GridHelper(6, 12, 0x444444, 0x333333));
+
+// Resize handler for non-XR preview
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+renderer.setSize(window.innerWidth, window.innerHeight);
+
+/* ================================================================
+   CLASS VRFigureGroup
+   ================================================================ */
+class VRFigureGroup {
+  constructor(scale) {
+    this._scale = scale;
+    this._group = new THREE.Group();
+    this._solidGeo   = new THREE.BoxGeometry(0.88*scale, 0.88*scale, 0.88*scale);
+    this._solidMat   = new THREE.MeshLambertMaterial({ color: 0xffffff });
+    this._outlineGeo = new THREE.BoxGeometry(scale, scale, scale);
+    this._outlineMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide });
+    this._solidMeshes = [];
+  }
+
+  build(positions, mirrored, quaternion) {
+    while(this._group.children.length) this._group.remove(this._group.children[0]);
+    this._solidMeshes = [];
+
+    const pts = mirrored
+      ? positions.map(([x,y,z]) => [-x, y, z])
+      : positions.map(([x,y,z]) => [ x, y, z]);
+
+    let cx=0, cy=0, cz=0;
+    for(const [x,y,z] of pts) { cx+=x; cy+=y; cz+=z; }
+    cx/=pts.length; cy/=pts.length; cz/=pts.length;
+
+    for(const [x,y,z] of pts) {
+      const solid = new THREE.Mesh(this._solidGeo, this._solidMat);
+      solid.position.set((x-cx)*this._scale, (y-cy)*this._scale, (z-cz)*this._scale);
+      this._group.add(solid);
+      this._solidMeshes.push(solid);
+
+      const outline = new THREE.Mesh(this._outlineGeo, this._outlineMat);
+      outline.position.copy(solid.position);
+      this._group.add(outline);
+    }
+
+    if(quaternion) this._group.quaternion.copy(quaternion);
+  }
+
+  get group() { return this._group; }
+  getMeshes() { return this._solidMeshes; }
+  setQuaternion(q) { this._group.quaternion.copy(q); }
+  getCurrentQuat() { return this._group.quaternion.clone(); }
+
+  dispose() {
+    this._solidGeo.dispose();
+    this._outlineGeo.dispose();
+    this._solidMat.dispose();
+    this._outlineMat.dispose();
+  }
+}
+
+/* ================================================================
+   HELPER: flushOptionRenders  (v5 — replaces renderFigureToTexture +
+   processPendingOptionRenders)
+   Uses a completely standalone WebGLRenderer so it never conflicts
+   with the XR compositor's framebuffer.  Renders all pending option
+   cells synchronously, copies each frame to a plain canvas, draws
+   the letter label overlay, then creates a CanvasTexture.
+   ================================================================ */
+function flushOptionRenders() {
+  const pendingCells = optionCells ? optionCells.filter(c => c._pendingRender) : [];
+  if(pendingCells.length === 0) return;
+
+  const SIZE = 512;
+  // One standalone renderer for all pending cells — completely separate from XR renderer
+  const offRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  offRenderer.setSize(SIZE, SIZE);
+
+  // Tightly zoomed camera so the figure fills the canvas
+  const offCam = new THREE.PerspectiveCamera(28, 1, 0.1, 50);
+  offCam.position.set(1.0, 1.0, 2.4);
+
+  for(const cell of pendingCells) {
+    const { positions, mirrored, quaternion } = cell._pendingRender;
+    cell._pendingRender = null;
+
+    // Dispose previous textures if any
+    if(cell._figRT)  { cell._figRT.dispose();  cell._figRT  = null; }
+    if(cell._figTex) { cell._figTex.dispose(); cell._figTex = null; }
+
+    // Build offscreen scene
+    const offScene = new THREE.Scene();
+    offScene.background = new THREE.Color(0x333333);
+    offScene.add(new THREE.AmbientLight(0xffffff, 0.7));
+    const dl = new THREE.DirectionalLight(0xffffff, 0.8);
+    dl.position.set(5, 10, 7);
+    offScene.add(dl);
+
+    const fig = new VRFigureGroup(0.10);
+    fig.build(positions, mirrored, quaternion);  // use trial-specific quaternion (matches desktop)
+    offScene.add(fig.group);
+
+    // Aim camera at bounding-box center so figure is always framed centrally
+    const box = new THREE.Box3().setFromObject(fig.group);
+    const figCenter = box.getCenter(new THREE.Vector3());
+    offCam.lookAt(figCenter);
+
+    offRenderer.render(offScene, offCam);
+
+    // Copy renderer output to a plain canvas, then draw letter label overlay
+    const canvas = document.createElement('canvas');
+    canvas.width = SIZE; canvas.height = SIZE;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(offRenderer.domElement, 0, 0);
+
+    // Letter label — top-left, dark background for readability
+    ctx.fillStyle = 'rgba(0,0,0,0.55)';
+    ctx.fillRect(8, 8, 56, 72);
+    ctx.font = 'bold 64px Arial, sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = 'rgba(0,0,0,0.9)';
+    ctx.shadowBlur = 4;
+    ctx.fillText(cell._label, 16, 68);
+    ctx.shadowBlur = 0;
+
+    const tex = new THREE.CanvasTexture(canvas);
+    cell._figTex = tex;
+    const mat = cell._backdrop.material;
+    mat.map = tex;
+    mat.color.setHex(0xffffff);
+    mat.needsUpdate = true;
+
+    offScene.traverse(obj => { if(obj.isMesh) obj.geometry.dispose(); });
+    fig.dispose();
+  }
+
+  offRenderer.dispose();
+}
+
+/* ================================================================
+   CLASS UIPanel
+   ================================================================ */
+class UIPanel {
+  constructor(widthM, heightM, resX=512, resY=256) {
+    this._canvas = document.createElement('canvas');
+    this._canvas.width = resX;
+    this._canvas.height = resY;
+    this._ctx = this._canvas.getContext('2d');
+    this._texture = new THREE.CanvasTexture(this._canvas);
+    this._mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(widthM, heightM),
+      new THREE.MeshBasicMaterial({ map: this._texture, transparent: true, side: THREE.DoubleSide })
+    );
+  }
+
+  update(lines, opts={}) {
+    const ctx = this._ctx;
+    const w = this._canvas.width, h = this._canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    ctx.fillStyle = opts.bg || 'rgba(0,0,0,0.75)';
+    const r = 20;
+    ctx.beginPath();
+    ctx.moveTo(r, 0); ctx.lineTo(w-r, 0);
+    ctx.quadraticCurveTo(w, 0, w, r);
+    ctx.lineTo(w, h-r); ctx.quadraticCurveTo(w, h, w-r, h);
+    ctx.lineTo(r, h); ctx.quadraticCurveTo(0, h, 0, h-r);
+    ctx.lineTo(0, r); ctx.quadraticCurveTo(0, 0, r, 0);
+    ctx.closePath();
+    ctx.fill();
+
+    const fontSize = opts.fontSize || 32;
+    ctx.font = `${opts.bold ? 'bold ' : ''}${fontSize}px -apple-system, Arial, sans-serif`;
+    ctx.fillStyle = opts.color || '#ffffff';
+    ctx.textAlign = opts.align || 'center';
+    ctx.textBaseline = 'middle';
+    const lineH = fontSize * 1.4;
+    const totalH = lines.length * lineH;
+    const startY = (h - totalH) / 2 + lineH / 2;
+    lines.forEach((line, i) => {
+      ctx.fillText(line, opts.align === 'left' ? 20 : w/2, startY + i * lineH);
+    });
+
+    this._texture.needsUpdate = true;
+  }
+
+  get mesh() { return this._mesh; }
+}
+
+/* ================================================================
+   CLASS Button3D
+   ================================================================ */
+class Button3D {
+  constructor(label, widthM=0.42, heightM=0.14) {
+    this._label = label;
+    this._enabled = true;
+    this._hovered = false;
+    this._cb = null;
+
+    this._canvas = document.createElement('canvas');
+    this._canvas.width = 512;
+    this._canvas.height = 128;
+    this._ctx = this._canvas.getContext('2d');
+    this._texture = new THREE.CanvasTexture(this._canvas);
+
+    this._mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(widthM, heightM),
+      new THREE.MeshBasicMaterial({ map: this._texture, transparent: true, side: THREE.DoubleSide })
+    );
+    this._group = new THREE.Group();
+    this._group.add(this._mesh);
+    this._redraw();
+  }
+
+  _redraw() {
+    const ctx = this._ctx;
+    const w = this._canvas.width, h = this._canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    const bg = !this._enabled ? 'rgba(60,60,60,0.8)' : this._hovered ? 'rgba(255,255,255,0.9)' : 'rgba(40,40,40,0.9)';
+    const fg = !this._enabled ? '#888' : this._hovered ? '#000' : '#fff';
+    const border = this._hovered ? '#ffffff' : '#666666';
+
+    ctx.fillStyle = bg;
+    ctx.strokeStyle = border;
+    ctx.lineWidth = 6;
+    const r = 16;
+    ctx.beginPath();
+    ctx.moveTo(r,0); ctx.lineTo(w-r,0); ctx.quadraticCurveTo(w,0,w,r);
+    ctx.lineTo(w,h-r); ctx.quadraticCurveTo(w,h,w-r,h);
+    ctx.lineTo(r,h); ctx.quadraticCurveTo(0,h,0,h-r);
+    ctx.lineTo(0,r); ctx.quadraticCurveTo(0,0,r,0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.font = 'bold 40px Arial, sans-serif';
+    ctx.fillStyle = fg;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(this._label, w/2, h/2);
+
+    this._texture.needsUpdate = true;
+  }
+
+  setLabel(text) { this._label = text; this._redraw(); }
+  setEnabled(v)  { this._enabled = v; this._redraw(); }
+  setHovered(v)  { if(this._hovered !== v) { this._hovered = v; this._redraw(); } }
+  onClick(cb)    { this._cb = cb; }
+  trigger()      { if(this._enabled && this._cb) this._cb(); }
+  get group()    { return this._group; }
+  get mesh()     { return this._mesh; }
+}
+
+/* ================================================================
+   CLASS OptionCell
+   ================================================================ */
+class OptionCell {
+  constructor(label, scale) { // scale kept for API compatibility; no longer used
+    this._label = label;
+    this._selected = false;
+    this._hovered = false;
+    this._figRT  = null;  // legacy RT field (kept for safe disposal if leftover)
+    this._figTex = null;  // CanvasTexture produced by flushOptionRenders()
+    this._group = new THREE.Group();
+
+    // Backdrop plane (raycasting target + figure texture display)
+    // Enlarged to 1.26 m for better VR visibility
+    this._backdrop = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.26, 1.26),
+      new THREE.MeshBasicMaterial({
+        color: 0x333333,
+        side: THREE.DoubleSide
+      })
+    );
+    this._group.add(this._backdrop);
+
+    // Border frame: 4 thin box meshes placed slightly in front of the backdrop
+    this._borderMat = new THREE.MeshBasicMaterial({ color: 0x444444 });
+    const bw=1.26, bh=1.26, bt=0.01, bd=0.005;
+    const borders = [
+      { pos:[0, bh/2, 0.002],   size:[bw+bt, bt, bd] },
+      { pos:[0, -bh/2, 0.002],  size:[bw+bt, bt, bd] },
+      { pos:[-bw/2, 0, 0.002],  size:[bt, bh, bd] },
+      { pos:[ bw/2, 0, 0.002],  size:[bt, bh, bd] },
+    ];
+    this._borderMeshes = borders.map(b => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(...b.size), this._borderMat);
+      m.position.set(...b.pos);
+      this._group.add(m);
+      return m;
+    });
+
+    // Label panel below
+    this._labelPanel = new UIPanel(0.38, 0.08, 256, 64);
+    this._labelPanel.update([label], { fontSize: 28, bold: true });
+    this._labelPanel.mesh.position.set(0, -0.72, 0);
+    this._group.add(this._labelPanel.mesh);
+
+    // NOTE: VRFigureGroup removed — figures are rendered to a flat texture via
+    // renderFigureToTexture() so they appear as 2D images, not 3D objects.
+  }
+
+  build(positions, mirrored, quaternion) {
+    // Queue for flushOptionRenders() — called synchronously from loadTrial() and
+    // showTutorial() using a standalone WebGLRenderer that is independent of the
+    // XR renderer, so textures always appear.
+    this._pendingRender = { positions, mirrored, quaternion };
+    if(this._figRT)  { this._figRT.dispose();  this._figRT  = null; }
+    if(this._figTex) { this._figTex.dispose(); this._figTex = null; }
+    const mat = this._backdrop.material;
+    mat.map = null;
+    mat.color.setHex(0x333333);
+    mat.needsUpdate = true;
+  }
+
+  dispose() {
+    if(this._figRT)  { this._figRT.dispose();  this._figRT  = null; }
+    if(this._figTex) { this._figTex.dispose(); this._figTex = null; }
+  }
+
+  setHovered(v) {
+    if(this._hovered === v) return;
+    this._hovered = v;
+    this._updateBorderColor();
+  }
+
+  setSelected(v) {
+    this._selected = v;
+    // Selection is communicated through border colour only — never touch backdrop
+    // colour once a texture is applied, as tinting would darken the figure image.
+    this._updateBorderColor();
+  }
+
+  setFeedback(state) {
+    if(state === 'correct') this._borderMat.color.setHex(0x4caf50);
+    else if(state === 'wrong') this._borderMat.color.setHex(0xef5350);
+    else this._updateBorderColor();
+  }
+
+  clearStates() {
+    this._selected = false;
+    this._hovered = false;
+    // Always restore to white so any applied CanvasTexture renders at full brightness
+    this._backdrop.material.color.setHex(0xffffff);
+    this._updateBorderColor();
+  }
+
+  _updateBorderColor() {
+    const col = this._selected ? 0xffffff : this._hovered ? 0x888888 : 0x444444;
+    this._borderMat.color.setHex(col);
+  }
+
+  get group()    { return this._group; }
+  get mesh()     { return this._backdrop; }
+  get selected() { return this._selected; }
+}
+
+/* ================================================================
+   SCENE OBJECTS (declared at module level)
+   ================================================================ */
+let targetFigureGroup, optionCells, optionsBoard;
+let hudPanel, selectionPanel, submitButton;
+let tutorialPanel, tutorialNextBtn;
+let debriefPanel, dlJsonBtn, dlCsvBtn;
+let fixationPanel;
+let ctrl0, ctrl1, hand0, hand1;
+let interactables = [];
+
+function buildScene() {
+  // Target figure
+  targetFigureGroup = new VRFigureGroup(CONFIG.VR_FIGURE_SCALE);
+  targetFigureGroup.group.position.set(-0.50, 1.30, -1.50);
+  scene.add(targetFigureGroup.group);
+
+  // Options board
+  optionsBoard = new THREE.Group();
+  optionsBoard.position.set(1.70, 1.20, -1.50);
+  optionsBoard.rotation.y = -0.26;
+  scene.add(optionsBoard);
+
+  const optLabels = ['A','B','C','D'];
+  // Tighter offsets to leave room for the centred submit button
+  const optOffsets = [[-0.55, 0.55, 0],[0.55, 0.55, 0],[-0.55, -0.55, 0],[0.55, -0.55, 0]];
+  optionCells = optLabels.map((lbl, i) => {
+    const cell = new OptionCell(lbl, CONFIG.VR_OPTION_SCALE);
+    cell.group.position.set(...optOffsets[i]);
+    cell.group.scale.setScalar(0.55);  // smaller cells
+    optionsBoard.add(cell.group);
+    return cell;
+  });
+
+  // HUD panel — aligned with target shape (X = -0.50)
+  hudPanel = new UIPanel(0.90, 0.20, 512, 128);
+  hudPanel.mesh.position.set(-0.50, 2.05, -1.50);
+  scene.add(hudPanel.mesh);
+
+  // Selection info panel — aligned with target shape (X = -0.50)
+  selectionPanel = new UIPanel(0.70, 0.12, 512, 96);
+  selectionPanel.mesh.position.set(-0.50, 0.72, -1.50);
+  scene.add(selectionPanel.mesh);
+
+  // Submit button — centred in the 2×2 options grid
+  submitButton = new Button3D('SUBMIT', 0.30, 0.10);
+  submitButton.group.position.set(1.70, 1.20, -1.50);
+  submitButton.group.rotation.y = -0.26;
+  submitButton.onClick(submitTrial);
+  submitButton.setEnabled(false);
+  scene.add(submitButton.group);
+
+  // Tutorial panel
+  tutorialPanel = new UIPanel(1.20, 0.70, 768, 448);
+  tutorialPanel.mesh.position.set(0.55, 1.60, -1.50);
+  scene.add(tutorialPanel.mesh);
+
+  tutorialNextBtn = new Button3D('NEXT', 0.38, 0.12);
+  tutorialNextBtn.group.position.set(0.55, 1.10, -1.50);
+  tutorialNextBtn.onClick(() => tutorialNext());
+  scene.add(tutorialNextBtn.group);
+
+  // Debrief panel
+  debriefPanel = new UIPanel(1.20, 0.80, 768, 512);
+  debriefPanel.mesh.position.set(0, 1.50, -1.80);
+  debriefPanel.mesh.visible = false;
+  scene.add(debriefPanel.mesh);
+
+  dlJsonBtn = new Button3D('Download JSON', 0.50, 0.12);
+  dlJsonBtn.group.position.set(-0.30, 0.95, -1.80);
+  dlJsonBtn.group.visible = false;
+  dlJsonBtn.onClick(exportJSON);
+  scene.add(dlJsonBtn.group);
+
+  dlCsvBtn = new Button3D('Download CSV', 0.50, 0.12);
+  dlCsvBtn.group.position.set(0.30, 0.95, -1.80);
+  dlCsvBtn.group.visible = false;
+  dlCsvBtn.onClick(exportCSV);
+  scene.add(dlCsvBtn.group);
+
+  // Fixation cross panel — shown between trials when CONFIG.FIXATION_CROSS is true
+  fixationPanel = new UIPanel(0.40, 0.40, 256, 256);
+  fixationPanel.update(['+'], { fontSize: 120, bold: true, bg: 'rgba(58,58,58,0.95)' });
+  fixationPanel.mesh.position.set(0, 1.55, -1.50);
+  fixationPanel.mesh.visible = false;
+  scene.add(fixationPanel.mesh);
+
+  // Initially hide trial elements
+  setTrialElementsVisible(false);
+  tutorialPanel.mesh.visible = false;
+  tutorialNextBtn.group.visible = false;
+}
+
+/* ================================================================
+   CONTROLLER SETUP
+   ================================================================ */
+function setupControllers() {
+  [0, 1].forEach(i => {
+    const ctrl = renderer.xr.getController(i);
+
+    // Ray line
+    const rayGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, 0, -3)
+    ]);
+    const ray = new THREE.Line(
+      rayGeo,
+      new THREE.LineBasicMaterial({ color: 0xffffff, opacity: 0.5, transparent: true })
+    );
+    ctrl.add(ray);
+
+    // Dot at ray end
+    const dot = new THREE.Mesh(
+      new THREE.SphereGeometry(0.007, 8, 8),
+      new THREE.MeshBasicMaterial({ color: 0xffffff })
+    );
+    dot.position.set(0, 0, -3);
+    ctrl.add(dot);
+
+    ctrl.addEventListener('selectstart', () => onSelectStart(ctrl));
+    ctrl.addEventListener('selectend',   () => onSelectEnd(ctrl));
+    // Squeeze (grip) no longer used for rotation — trigger takes over.
+    // Keep listeners so grip presses don't throw errors, but handlers are no-ops.
+    ctrl.addEventListener('squeezestart', () => {/* grip: no-op in v4 */});
+    ctrl.addEventListener('squeezeend',   () => {/* grip: no-op in v4 */});
+
+    scene.add(ctrl);
+    if(i === 0) ctrl0 = ctrl; else ctrl1 = ctrl;
+  });
+
+  // Hands
+  [0, 1].forEach(i => {
+    const hand = renderer.xr.getHand(i);
+    scene.add(hand);
+    if(i === 0) hand0 = hand; else hand1 = hand;
+  });
+}
+
+/* ================================================================
+   INTERACTION LOGIC
+   ================================================================ */
+const raycaster = new THREE.Raycaster();
+const tempMatrix = new THREE.Matrix4();
+
+let isGrabbing = false;
+let grabController = null;
+const grabStartCtrlInvQuat   = new THREE.Quaternion(); // kept for legacy compat
+const grabStartFigQuat        = new THREE.Quaternion(); // kept for legacy compat
+const grabStartCtrlWorldQuat  = new THREE.Quaternion(); // world-space grab start (v5)
+const grabStartFigWorldQuat   = new THREE.Quaternion(); // figure world-space at grab start (v5)
+
+// Tint figure meshes to signal grab state (light-blue = held, white = free)
+function setFigureGrabColor(hex) {
+  if(!targetFigureGroup) return;
+  for(const m of targetFigureGroup.getMeshes()) m.material.color.setHex(hex);
+}
+
+let hoveredObject = null;
+const hoveredMap = new WeakMap();
+
+function registerInteractable(mesh, handler) {
+  hoveredMap.set(mesh, handler);
+}
+
+function registerAllInteractables() {
+  interactables = [];
+  optionCells.forEach(cell => {
+    interactables.push(cell.mesh);
+    registerInteractable(cell.mesh, cell);
+  });
+  interactables.push(submitButton.mesh);
+  registerInteractable(submitButton.mesh, submitButton);
+  interactables.push(tutorialNextBtn.mesh);
+  registerInteractable(tutorialNextBtn.mesh, tutorialNextBtn);
+  interactables.push(dlJsonBtn.mesh);
+  registerInteractable(dlJsonBtn.mesh, dlJsonBtn);
+  interactables.push(dlCsvBtn.mesh);
+  registerInteractable(dlCsvBtn.mesh, dlCsvBtn);
+}
+
+function updateRaycast(ctrl) {
+  if(!ctrl || !ctrl.matrixWorld) return null;
+  ctrl.updateMatrixWorld(true);
+  tempMatrix.identity().extractRotation(ctrl.matrixWorld);
+  raycaster.ray.origin.setFromMatrixPosition(ctrl.matrixWorld);
+  raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+  const hits = raycaster.intersectObjects(interactables);
+  return hits.length > 0 ? hits[0].object : null;
+}
+
+function updateHover(hitMesh) {
+  if(hoveredObject && hoveredObject !== hitMesh) {
+    const h = hoveredMap.get(hoveredObject);
+    if(h) h.setHovered(false);
+    hoveredObject = null;
+  }
+  if(hitMesh) {
+    const h = hoveredMap.get(hitMesh);
+    if(h) h.setHovered(true);
+    hoveredObject = hitMesh;
+  }
+}
+
+function onSelectStart(ctrl) {
+  ctrl.updateMatrixWorld(true);
+  tempMatrix.identity().extractRotation(ctrl.matrixWorld);
+  raycaster.ray.origin.setFromMatrixPosition(ctrl.matrixWorld);
+  raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tempMatrix);
+
+  // Priority 1: figure grab — mesh intersection OR sphere proximity fallback
+  if(targetFigureGroup && targetFigureGroup.group.visible) {
+    const figMeshes   = targetFigureGroup.getMeshes();
+    const figHits     = figMeshes.length > 0
+      ? raycaster.intersectObjects(figMeshes, false) : [];
+    const figWorldPos = new THREE.Vector3();
+    targetFigureGroup.group.getWorldPosition(figWorldPos);
+    const nearEnough  = raycaster.ray.distanceToPoint(figWorldPos) < CONFIG.VR_GRAB_RADIUS;
+
+    if(figHits.length > 0 || nearEnough) {
+      isGrabbing = true;
+      grabController = ctrl;
+      ctrl.getWorldQuaternion(grabStartCtrlWorldQuat);
+      targetFigureGroup.group.getWorldQuaternion(grabStartFigWorldQuat);
+      setFigureGrabColor(0xaaddff); // light-blue tint: object is "held"
+      return;
+    }
+  }
+
+  // Priority 2: UI interactables (option cells, buttons)
+  const hit = updateRaycast(ctrl);
+  if(!hit) return;
+  const handler = hoveredMap.get(hit);
+  if(!handler) return;
+  if(handler instanceof OptionCell) {
+    toggleSelection(optionCells.indexOf(handler));
+  } else if(handler instanceof Button3D) {
+    handler.trigger();
+  }
+}
+
+function onSelectEnd(ctrl) {
+  if(grabController === ctrl) {
+    isGrabbing = false;
+    grabController = null;
+    setFigureGrabColor(0xffffff); // restore white on release
+  }
+}
+
+// Squeeze (grip) handlers — kept as no-ops; grip no longer rotates in v4
+function onSqueezeStart(ctrl) { /* no-op */ }
+function onSqueezeEnd(ctrl)   { /* no-op */ }
+
+function updateGrab() {
+  if(!isGrabbing || !grabController) return;
+  /* World-space delta pattern (v5):
+     grabStartCtrlWorldQuat = controller world-quat at grab start
+     grabStartFigWorldQuat  = figure world-quat at grab start
+     Each frame: delta = currentCtrlWorld × inv(startCtrlWorld)
+     newFigQuat = delta × startFigWorld
+     This keeps the rotation in a consistent world reference frame so
+     tilting the controller up reliably tilts the figure up regardless
+     of the figure's current orientation. */
+  const currentCtrlWorldQuat = grabController.getWorldQuaternion(new THREE.Quaternion());
+  const delta = currentCtrlWorldQuat.clone()
+    .multiply(grabStartCtrlWorldQuat.clone().invert());
+  targetFigureGroup.group.quaternion.copy(
+    delta.clone().multiply(grabStartFigWorldQuat)
+  );
+}
+
+/* ================================================================
+   JOYSTICK ROTATION  (v5)
+   Reads thumbstick axes from the WebXR Gamepad API each frame and
+   rotates the target figure around world Y (horizontal stick) and
+   world X (vertical stick).  Pre-multiplying onto the existing
+   quaternion keeps world-axis semantics regardless of figure orientation.
+   Skipped when the user is grab-rotating (isGrabbing) to avoid conflict.
+   ================================================================ */
+const JOYSTICK_SPEED    = 0.03;  // radians per frame at full deflection
+const JOYSTICK_DEADZONE = 0.15;
+
+function updateJoystickRotation() {
+  if(isGrabbing) return;          // grab takes priority
+  if(!targetFigureGroup || !targetFigureGroup.group.visible) return;
+
+  const xrSession = renderer.xr.getSession();
+  if(!xrSession) return;
+
+  let ax = 0, ay = 0;             // accumulate across both controllers
+
+  for(const src of xrSession.inputSources) {
+    const gp = src.gamepad;
+    if(!gp || !gp.axes || gp.axes.length < 4) continue;
+    const hAxis = gp.axes[2];     // left/right thumbstick
+    const vAxis = gp.axes[3];     // up/down thumbstick
+    if(Math.abs(hAxis) > JOYSTICK_DEADZONE) ax += hAxis;
+    if(Math.abs(vAxis) > JOYSTICK_DEADZONE) ay += vAxis;
+  }
+
+  if(ax === 0 && ay === 0) return;
+
+  // Build world-axis quaternions and pre-multiply onto figure
+  const qY = new THREE.Quaternion()
+    .setFromAxisAngle(new THREE.Vector3(0, 1, 0), ax * JOYSTICK_SPEED);
+  const qX = new THREE.Quaternion()
+    .setFromAxisAngle(new THREE.Vector3(1, 0, 0), ay * JOYSTICK_SPEED);
+
+  // Pre-multiply: world rotation applied BEFORE the figure's current rotation
+  targetFigureGroup.group.quaternion.premultiply(qY).premultiply(qX);
+}
+
+/* ================================================================
+   HAND TRACKING
+   ================================================================ */
+const handPinching = [false, false];
+// handGrabbing removed — fist detection replaced by pinch-on-figure (mirrors trigger)
+
+function updateHandTracking(hand, idx) {
+  if(!hand || !hand.joints) return;
+  const indexTip = hand.joints['index-finger-tip'];
+  const thumbTip  = hand.joints['thumb-tip'];
+  const wrist     = hand.joints['wrist'];
+  if(!indexTip || !thumbTip || !wrist) return;
+
+  const pinchDist   = indexTip.position.distanceTo(thumbTip.position);
+  const isPinching  = pinchDist < 0.025;
+  const wasPinching = handPinching[idx];
+
+  // Pinch START
+  if(!wasPinching && isPinching) {
+    raycaster.ray.origin.copy(indexTip.position);
+    raycaster.ray.direction.subVectors(indexTip.position, wrist.position).normalize();
+
+    // Priority 1: figure grab — mesh intersection OR sphere proximity fallback
+    if(targetFigureGroup && targetFigureGroup.group.visible) {
+      const figMeshes   = targetFigureGroup.getMeshes();
+      const figHits     = figMeshes.length > 0
+        ? raycaster.intersectObjects(figMeshes, false) : [];
+      const figWorldPos = new THREE.Vector3();
+      targetFigureGroup.group.getWorldPosition(figWorldPos);
+      const nearEnough  = raycaster.ray.distanceToPoint(figWorldPos) < CONFIG.VR_GRAB_RADIUS;
+
+      if(figHits.length > 0 || nearEnough) {
+        isGrabbing = true;
+        grabController = hand; // wrist world-quat used for rotation
+        hand.getWorldQuaternion(grabStartCtrlWorldQuat);
+        targetFigureGroup.group.getWorldQuaternion(grabStartFigWorldQuat);
+        setFigureGrabColor(0xaaddff);
+        handPinching[idx] = true;
+        return;
+      }
+    }
+
+    // Priority 2: pinch on UI interactables
+    const hits = raycaster.intersectObjects(interactables);
+    if(hits.length > 0) {
+      const handler = hoveredMap.get(hits[0].object);
+      if(handler instanceof OptionCell) toggleSelection(optionCells.indexOf(handler));
+      else if(handler instanceof Button3D) handler.trigger();
+    }
+  }
+
+  // Pinch END — release grab if this hand was rotating
+  if(wasPinching && !isPinching && grabController === hand) {
+    isGrabbing = false;
+    grabController = null;
+    setFigureGrabColor(0xffffff);
+  }
+
+  handPinching[idx] = isPinching;
+}
+
+/* ================================================================
+   TUTORIAL MANAGER
+   ================================================================ */
+let tutorialStep = 0;
+let tutorialActive = false;
+let tutorialAutoRotate = false;
+
+const TUTORIAL_STEPS = [
+  {
+    lines: ['WELCOME', 'Mental Rotation Test', '', 'In each trial:', 'Study the target shape,', 'find the 2 matching options.', '', 'Press NEXT to continue'],
+    action: 'show_welcome'
+  },
+  {
+    lines: ['TARGET OBJECT', '', 'This shape is your target.', 'Study it from all angles.', '', 'Press NEXT to continue'],
+    action: 'show_target'
+  },
+  {
+    lines: ['ROTATE THE TARGET', '', 'Squeeze the GRIP button', 'while near the shape', 'to rotate it freely.', '', 'or use the LEFT THUMBSTICK', 'to rotate.', '', 'Press NEXT to continue'],
+    action: 'show_grab_hint'
+  },
+  {
+    lines: ['ANSWER OPTIONS', '', 'These 4 shapes are', 'the answer options.', '', '2 of them match the target', '(same shape, rotated).', '', 'Press NEXT to continue'],
+    action: 'show_options'
+  },
+  {
+    lines: ['HOW TO SELECT', '', 'Point at an option', 'and pull the TRIGGER', '(or pinch index+thumb)', 'to select it.', '', 'Select exactly 2. Press NEXT'],
+    action: 'highlight_options'
+  },
+  {
+    lines: ['HOW TO SUBMIT', '', 'When 2 options are selected,', 'point at the SUBMIT button', 'and pull the TRIGGER.', '', 'Press NEXT to continue'],
+    action: 'highlight_submit'
+  },
+  {
+    lines: ['PRACTICE ROUND', '', 'You will now do 2 practice', 'trials WITH feedback.', '', 'Correct = green border', 'Wrong   = red border', '', 'Press START to begin!'],
+    action: 'show_start',
+    nextLabel: 'START'
+  }
+];
+
+function showTutorial() {
+  tutorialActive = true;
+  tutorialStep = 0;
+
+  // participantId and startTime are set by the pre-VR HTML form before entering XR.
+
+  setTrialElementsVisible(false);
+  tutorialPanel.mesh.visible = true;
+  tutorialNextBtn.group.visible = true;
+
+  // Generate trials and load first practice figure for tutorial display
+  generateTrials();
+  const tutFig = session.practiceTrials[0];
+  targetFigureGroup.build(tutFig.positions, false, tutFig.targetQuat);
+  for(let i=0; i<4; i++)
+    optionCells[i].build(tutFig.positions, tutFig.options[i].mirrored, tutFig.options[i].quat);
+  flushOptionRenders();
+
+  applyTutorialStep(0);
+}
+
+function applyTutorialStep(step) {
+  const s = TUTORIAL_STEPS[step];
+  tutorialPanel.update(s.lines, { fontSize: 28, bold: false });
+  tutorialNextBtn.setLabel(s.nextLabel || 'NEXT');
+
+  const showTarget  = step >= 1;
+  const showOptions = step >= 3;
+  const highlightSubmit = step === 5;
+
+  targetFigureGroup.group.visible = showTarget;
+  // Position: to the LEFT of the tutorial panel when visible, centred during trials
+  if(showTarget) targetFigureGroup.group.position.set(-1.30, 1.30, -1.50);
+  else           targetFigureGroup.group.position.set(-0.50, 1.30, -1.50);
+  tutorialAutoRotate = (step === 1);
+  optionsBoard.visible = showOptions;
+  submitButton.group.visible = highlightSubmit;
+
+  if(step === 5) submitButton.setHovered(true);
+  else submitButton.setHovered(false);
+}
+
+function tutorialNext() {
+  tutorialStep++;
+  if(tutorialStep >= TUTORIAL_STEPS.length) {
+    tutorialActive = false;
+    tutorialPanel.mesh.visible = false;
+    tutorialNextBtn.group.visible = false;
+    beginPractice();
+    return;
+  }
+  applyTutorialStep(tutorialStep);
+}
+
+/* ================================================================
+   TRIAL STATE MACHINE
+   ================================================================ */
+let selectedIndices = [];
+let timerSeconds = 0;
+let timerIv = null;
+
+function currentTrials() {
+  if(session.currentBlock === 'practice') return session.practiceTrials;
+  return session.blockATrials;
+}
+
+function setTrialElementsVisible(v) {
+  if(targetFigureGroup) targetFigureGroup.group.visible = v;
+  if(optionsBoard) optionsBoard.visible = v;
+  if(hudPanel) hudPanel.mesh.visible = v;
+  if(selectionPanel) selectionPanel.mesh.visible = v;
+  if(submitButton) submitButton.group.visible = v;
+}
+
+function beginPractice() {
+  session.currentBlock = 'practice';
+  session.trialIndex = 0;
+  targetFigureGroup.group.position.set(-0.50, 1.30, -1.50); // reset from tutorial offset
+  setTrialElementsVisible(true);
+  loadTrial(session.practiceTrials[0]);
+  hudPanel.update(['Practice', `Trial 1 / ${session.practiceTrials.length}`], { fontSize: 28 });
+}
+
+function beginBlock(block) {
+  session.currentBlock = block;
+  session.trialIndex = 0;
+  targetFigureGroup.group.position.set(-0.50, 1.30, -1.50); // ensure centred
+  setTrialElementsVisible(true);
+  loadTrial(session.blockATrials[0]);
+  startTimer(CONFIG.TIME_LIMIT_SECONDS);
+}
+
+function loadTrial(t) {
+  /* VR PORT NOTE: In WebXR, loadTrial directly updates Three.js scene objects.
+     No DOM manipulation. All state shown via UIPanel CanvasTextures.
+     Equivalent to the desktop version's DOM-based loadTrial(). */
+  session.currentTrial = t;
+  selectedIndices = [];
+  session.trialStartMs = performance.now();
+
+  targetFigureGroup.build(t.positions, false, t.targetQuat);
+
+  // Use each option's trial-specific quaternion — identical to the desktop version.
+  for(let i=0; i<4; i++) {
+    optionCells[i].build(t.positions, t.options[i].mirrored, t.options[i].quat);
+    optionCells[i].clearStates();
+  }
+  flushOptionRenders();   // render thumbnails synchronously with standalone renderer
+
+  rebuildInteractables();
+  submitButton.setEnabled(false);
+  updateSelectionPanel();
+  updateHUD();
+}
+
+function rebuildInteractables() {
+  interactables = optionCells.map(c => c.mesh)
+    .concat([submitButton.mesh, tutorialNextBtn.mesh, dlJsonBtn.mesh, dlCsvBtn.mesh]);
+}
+
+function updateHUD() {
+  const t = session.currentTrial;
+  if(!t) return;
+  const blockName = session.currentBlock === 'practice' ? 'Practice' : 'Block A';
+  const total = currentTrials().length;
+  const timerStr = session.currentBlock === 'practice' ? '' : formatTimer(timerSeconds);
+  hudPanel.update([`${blockName}  |  Trial ${t.trialNum} / ${total}`, timerStr], { fontSize: 28 });
+}
+
+function updateSelectionPanel() {
+  selectionPanel.update([`Select 2 answers  (${selectedIndices.length} selected)`]);
+}
+
+function toggleSelection(idx) {
+  if(idx < 0 || idx > 3) return;
+  const pos = selectedIndices.indexOf(idx);
+  if(pos >= 0) {
+    selectedIndices.splice(pos, 1);
+    optionCells[idx].setSelected(false);
+  } else if(selectedIndices.length < 2) {
+    selectedIndices.push(idx);
+    optionCells[idx].setSelected(true);
+  }
+  submitButton.setEnabled(selectedIndices.length === 2);
+  updateSelectionPanel();
+}
+
+function submitTrial() {
+  const t = session.currentTrial;
+  if(!t || selectedIndices.length !== 2) return;
+  t.responseMs = Math.round(performance.now() - session.trialStartMs);
+  t.selectedSlots = [...selectedIndices];
+  const sel = [...selectedIndices].sort((a,b)=>a-b);
+  const cor = [...t.correctSlots].sort((a,b)=>a-b);
+  t.correct = (sel[0]===cor[0] && sel[1]===cor[1]);
+  session.allTrials.push({...t});
+
+  if(t.isPractice) {
+    for(let i=0; i<4; i++) {
+      const isCorrect = t.correctSlots.includes(i);
+      const wasSelected = selectedIndices.includes(i);
+      if(isCorrect) optionCells[i].setFeedback('correct');
+      else if(wasSelected) optionCells[i].setFeedback('wrong');
+    }
+    setTimeout(() => {
+      optionCells.forEach(c => c.setFeedback(null));
+      advanceTrial(false);
+    }, 1600);
+  } else {
+    advanceTrial(false);
+  }
+}
+
+function advanceTrial(timedOut) {
+  session.trialIndex++;
+  const trials = currentTrials();
+  if(session.trialIndex >= trials.length || timedOut) {
+    endBlock();
+    return;
+  }
+  if (CONFIG.FIXATION_CROSS) {
+    showFixationVR(() => loadTrial(trials[session.trialIndex]));
+  } else {
+    loadTrial(trials[session.trialIndex]);
+  }
+}
+
+function showFixationVR(cb) {
+  setTrialElementsVisible(false);
+  fixationPanel.mesh.visible = true;
+  setTimeout(() => {
+    fixationPanel.mesh.visible = false;
+    setTrialElementsVisible(true);
+    cb();
+  }, CONFIG.FIXATION_MS);
+}
+
+function endBlock() {
+  clearInterval(timerIv); timerIv = null;
+  if(session.currentBlock === 'practice') {
+    beginBlock('A');
+  } else {
+    showDebrief();
+  }
+}
+
+function timeUp() { advanceTrial(true); }
+
+function startTimer(sec) {
+  timerSeconds = sec;
+  clearInterval(timerIv);
+  timerIv = setInterval(() => {
+    timerSeconds--;
+    updateHUD();
+    if(timerSeconds <= 0) { clearInterval(timerIv); timerIv=null; timeUp(); }
+  }, 1000);
+}
+
+function formatTimer(s) {
+  return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
+}
+
+/* ================================================================
+   DEBRIEF SCREEN
+   ================================================================ */
+function showDebrief() {
+  setTrialElementsVisible(false);
+
+  const aTrials = session.allTrials.filter(t => t.block === 'A');
+  const score   = aTrials.filter(t => t.correct).length;
+  const rts     = aTrials.filter(t => t.responseMs).map(t => t.responseMs);
+  const meanRT  = rts.length ? Math.round(rts.reduce((s,v)=>s+v,0)/rts.length) : 0;
+  const medRT   = rts.length ? computeMedian(rts) : 0;
+
+  debriefPanel.update([
+    'SESSION COMPLETE',
+    '',
+    `Score:       ${score} / ${CONFIG.TRIALS_PER_BLOCK}`,
+    `Completed:   ${aTrials.length} / ${CONFIG.TRIALS_PER_BLOCK} trials`,
+    `Mean RT:     ${(meanRT/1000).toFixed(2)} s`,
+    `Median RT:   ${(medRT/1000).toFixed(2)} s`,
+    '',
+    'Point at the buttons below to export data.'
+  ], { fontSize: 26 });
+
+  debriefPanel.mesh.visible = true;
+  dlJsonBtn.group.visible   = true;
+  dlCsvBtn.group.visible    = true;
+
+  rebuildInteractables();
+}
+
+/* ================================================================
+   RENDER LOOP
+   Defined as a named function so it can be passed to setAnimationLoop
+   from inside window.load AFTER buildScene() has initialised all
+   scene objects. Starting the loop before buildScene() would cause
+   silent errors when the loop tries to read undefined references
+   (targetFigureGroup, optionCells, etc.).
+   ================================================================ */
+function renderLoop(time, frame) {
+  // 1. Grab-rotate update
+  updateGrab();
+
+  // 1b. Joystick rotation (thumbstick alternative, skipped when grabbing)
+  updateJoystickRotation();
+
+  // 2. Tutorial auto-rotation
+  if(tutorialAutoRotate) {
+    const rot = new THREE.Quaternion().setFromAxisAngle(
+      new THREE.Vector3(0.3, 1, 0.1).normalize(), 0.008
+    );
+    targetFigureGroup.group.quaternion.multiply(rot);
+  }
+
+  // 3. Controller raycasting (only active while in an XR session)
+  if(renderer.xr.isPresenting) {
+    let hit = null;
+    if(ctrl0) hit = updateRaycast(ctrl0);
+    if(!hit && ctrl1) hit = updateRaycast(ctrl1);
+    updateHover(hit);
+
+    // Hand tracking
+    if(hand0) updateHandTracking(hand0, 0);
+    if(hand1) updateHandTracking(hand1, 1);
+  }
+
+  // 4. Render
+  renderer.render(scene, camera);
+}
+
+/* ================================================================
+   VR SESSION START
+   ================================================================ */
+async function checkXRSupport() {
+  if(!navigator.xr) {
+    document.getElementById('enter-vr-btn').textContent = 'WebXR not available';
+    document.getElementById('enter-vr-btn').disabled = true;
+    return;
+  }
+  const supported = await navigator.xr.isSessionSupported('immersive-vr');
+  if(supported) {
+    // VR is available — highlight the button but keep the overlay visible.
+    // The user must explicitly tap "Enter VR" to start the XR session.
+    // (Do NOT auto-hide the overlay here — that caused the "flash and disappear" bug
+    //  where Quest Browser resolved isSessionSupported() before the user could tap.)
+    const btn = document.getElementById('enter-vr-btn');
+    btn.textContent = '▶  Enter VR';
+    btn.style.background = '#4a90e2';
+    btn.style.boxShadow = '0 0 24px rgba(74,144,226,0.7)';
+  } else {
+    document.getElementById('enter-vr-btn').textContent = 'VR Not Supported on This Device';
+    document.getElementById('enter-vr-btn').disabled = true;
+  }
+}
+
+document.getElementById('enter-vr-btn').addEventListener('click', async () => {
+  // Validate participant ID before entering VR
+  const pidInput = document.getElementById('pid-vr');
+  const pid = pidInput.value.trim();
+  if (CONFIG.PARTICIPANT_ID_PROMPT && !pid) {
+    pidInput.style.borderColor = '#ef5350';
+    pidInput.focus();
+    return;
+  }
+  session.participantId = pid || 'anonymous';
+  session.startTime = new Date().toISOString();
+
+  try {
+    // 'local' is the universal required feature (supported on all Quest configs).
+    // 'local-floor' is optional — Quest will honour it when the room boundary
+    // is set up; if not, it gracefully falls back to 'local' (seated/standing).
+    const xrSession = await navigator.xr.requestSession('immersive-vr', {
+      requiredFeatures: ['local'],
+      optionalFeatures: ['local-floor', 'hand-tracking', 'bounded-floor']
+    });
+    await renderer.xr.setSession(xrSession);
+    document.getElementById('fallback').style.display = 'none';
+    showTutorial();
+  } catch(e) {
+    console.error('XR session failed:', e);
+    document.getElementById('enter-vr-btn').textContent = 'Failed: ' + e.message;
+  }
+});
+
+/* ================================================================
+   INIT
+   ================================================================ */
+window.addEventListener('load', () => {
+  buildScene();
+  setupControllers();
+  registerAllInteractables();
+  checkXRSupport();
+  // Start the render loop LAST — after buildScene() has created all scene objects.
+  // Using setAnimationLoop (not requestAnimationFrame) is required for WebXR:
+  // it hands frame timing control to the XR compositor when a session is active.
+  renderer.setAnimationLoop(renderLoop);
+});
+</script>
+</body>
+</html>
