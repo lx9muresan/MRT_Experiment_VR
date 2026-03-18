@@ -793,10 +793,10 @@ function buildScene() {
     return cell;
   });
 
-  // HUD panel — aligned with target shape (X = -0.30)
+  // HUD panel — parented to target figure group so it stays aligned regardless of figure position
   hudPanel = new UIPanel(0.90, 0.20, 512, 128);
-  hudPanel.mesh.position.set(-0.30, 2.05, -1.50);
-  scene.add(hudPanel.mesh);
+  hudPanel.mesh.position.set(0, 7.50, 0);  // relative offset above figure (world units ÷ VR_FIGURE_SCALE)
+  targetFigureGroup.group.add(hudPanel.mesh);
 
   // Selection info panel — aligned with target shape (X = -0.50)
   selectionPanel = new UIPanel(0.70, 0.12, 512, 96);
