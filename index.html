@@ -772,14 +772,14 @@ let interactables = [];
 function buildScene() {
   // Target figure
   targetFigureGroup = new VRFigureGroup(CONFIG.VR_FIGURE_SCALE);
-  targetFigureGroup.group.position.set(-0.30, 1.30, -1.50);
+  targetFigureGroup.group.position.set(-0.50, 1.30, -1.30);
   scene.add(targetFigureGroup.group);
 
   // Options board
   optionsBoard = new THREE.Group();
   optionsBoard.position.set(1.70, 1.20, -1.20);
-  optionsBoard.rotation.y = -0.5;
-  optionsBoard.rotation.z = 0;
+  optionsBoard.rotation.y = -0.26;
+  optionsBoard.rotation.z = 0.2;
   scene.add(optionsBoard);
 
   const optLabels = ['A','B','C','D'];
@@ -793,21 +793,21 @@ function buildScene() {
     return cell;
   });
 
-  // HUD panel — parented to target figure group so it stays aligned regardless of figure position
+  // HUD panel — aligned with target shape (X = -0.50)
   hudPanel = new UIPanel(0.90, 0.20, 512, 128);
-  hudPanel.mesh.position.set(0, 7.50, 0);  // relative offset above figure (world units ÷ VR_FIGURE_SCALE)
-  targetFigureGroup.group.add(hudPanel.mesh);
+  hudPanel.mesh.position.set(-0.50, 2.05, -1.50);
+  scene.add(hudPanel.mesh);
 
   // Selection info panel — aligned with target shape (X = -0.50)
   selectionPanel = new UIPanel(0.70, 0.12, 512, 96);
-  selectionPanel.mesh.position.set(-0.30, 0.72, -1.50);
+  selectionPanel.mesh.position.set(-0.50, 0.72, -1.50);
   scene.add(selectionPanel.mesh);
 
   // Submit button — centred in the 2×2 options grid
   submitButton = new Button3D('SUBMIT', 0.30, 0.10);
   submitButton.group.position.set(1.70, 1.20, -1.20);
-  submitButton.group.rotation.y = -0.5;
-  submitButton.group.rotation.z = 0;
+  submitButton.group.rotation.y = -0.26;
+  submitButton.group.rotation.z = 0.2;
   submitButton.onClick(submitTrial);
   submitButton.setEnabled(false);
   scene.add(submitButton.group);
