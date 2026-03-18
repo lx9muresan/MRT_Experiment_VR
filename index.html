@@ -1,12 +1,15 @@
 <!--
 ================================================================
-  VR MENTAL ROTATION TEST — Meta Quest 3  (mrt-vr-3)
-  Based on mrt-vr-2.html
+  VR MENTAL ROTATION TEST — Meta Quest 3  (mrt-vr-4)
+  Based on mrt-vr-3.html
 
-  Changes over mrt-vr-2:
-    1. HUD and selection panels moved -0.5m on X to align with target shape
-    2. Option cells scaled down (0.55×) with tighter grid offsets
-    3. Submit button repositioned to centre of 2×2 options grid
+  Changes over mrt-vr-3:
+    1. Selection windows 25% smaller (scale 0.55 → 0.4125)
+    2. Options board moved closer to user (z -1.50 → -1.20)
+    3. Options board tilted toward the left (rotation.z = 0.2)
+    4. Offscreen camera moved 25% closer → figures appear 25% larger in thumbnails
+    5. Removed "Block A" label — now shown as "Trials"
+    6. Tutorial mentions both thumbsticks for rotation
 ================================================================
 
   USAGE OPTION A — Quest Browser (no install needed):
@@ -52,8 +55,8 @@
   CONTROLLER MAPPING (Meta Quest Touch / Touch Pro):
     Trigger button (index finger)  -> Select option / press button
     Grip button  (middle finger)   -> Grab + rotate target figure
-    Left thumbstick                -> Rotate target figure (alternative to grab)
-    Both controllers work for trigger and grip functions.
+    Either thumbstick              -> Rotate target figure (alternative to grab)
+    Both controllers work for all functions.
 
   HAND TRACKING:
     Index + thumb pinch  -> Select option / press button
@@ -66,7 +69,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>VR Shape Rotation Game</title>
+<title>VR Mental Rotation Test — Quest 3 (mrt-vr-4)</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -136,7 +139,7 @@ canvas#c {
 <div id="fallback">
   <h1>VR Mental Rotation Test</h1>
   <p>
-    This application requires a VR headset with WebXR support.<br>
+    This application requires a Meta Quest 3 headset with WebXR support.<br>
     Enter your Participant ID below, then tap Enter VR.
   </p>
   <div id="pid-wrap">
@@ -475,9 +478,9 @@ function flushOptionRenders() {
   const offRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
   offRenderer.setSize(SIZE, SIZE);
 
-  // Tightly zoomed camera so the figure fills the canvas
+  // Camera moved 25% closer so figure appears 25% larger in thumbnail
   const offCam = new THREE.PerspectiveCamera(28, 1, 0.1, 50);
-  offCam.position.set(1.0, 1.0, 2.4);
+  offCam.position.set(0.75, 0.75, 1.8);
 
   for(const cell of pendingCells) {
     const { positions, mirrored, quaternion } = cell._pendingRender;
@@ -769,13 +772,14 @@ let interactables = [];
 function buildScene() {
   // Target figure
   targetFigureGroup = new VRFigureGroup(CONFIG.VR_FIGURE_SCALE);
-  targetFigureGroup.group.position.set(-0.50, 1.30, -1.50);
+  targetFigureGroup.group.position.set(-0.50, 1.30, -1.30);
   scene.add(targetFigureGroup.group);
 
   // Options board
   optionsBoard = new THREE.Group();
-  optionsBoard.position.set(1.70, 1.20, -1.50);
+  optionsBoard.position.set(1.70, 1.20, -1.20);
   optionsBoard.rotation.y = -0.26;
+  optionsBoard.rotation.z = 0.2;
   scene.add(optionsBoard);
 
   const optLabels = ['A','B','C','D'];
@@ -784,7 +788,7 @@ function buildScene() {
   optionCells = optLabels.map((lbl, i) => {
     const cell = new OptionCell(lbl, CONFIG.VR_OPTION_SCALE);
     cell.group.position.set(...optOffsets[i]);
-    cell.group.scale.setScalar(0.55);  // smaller cells
+    cell.group.scale.setScalar(0.4125);  // 25% smaller than v3
     optionsBoard.add(cell.group);
     return cell;
   });
@@ -801,8 +805,9 @@ function buildScene() {
 
   // Submit button — centred in the 2×2 options grid
   submitButton = new Button3D('SUBMIT', 0.30, 0.10);
-  submitButton.group.position.set(1.70, 1.20, -1.50);
+  submitButton.group.position.set(1.70, 1.20, -1.20);
   submitButton.group.rotation.y = -0.26;
+  submitButton.group.rotation.z = 0.2;
   submitButton.onClick(submitTrial);
   submitButton.setEnabled(false);
   scene.add(submitButton.group);
@@ -1144,7 +1149,7 @@ const TUTORIAL_STEPS = [
     action: 'show_target'
   },
   {
-    lines: ['ROTATE THE TARGET', '', 'Squeeze the GRIP button', 'while near the shape', 'to rotate it freely.', '', 'or use the LEFT THUMBSTICK', 'to rotate.', '', 'Press NEXT to continue'],
+    lines: ['ROTATE THE TARGET', '', 'Squeeze the GRIP button', 'while near the shape', 'to rotate it freely.', '', 'or use EITHER THUMBSTICK', '(left or right) to rotate.', '', 'Press NEXT to continue'],
     action: 'show_grab_hint'
   },
   {
@@ -1189,7 +1194,7 @@ function showTutorial() {
 
 function applyTutorialStep(step) {
   const s = TUTORIAL_STEPS[step];
-  tutorialPanel.update(s.lines, { fontSize: 28, bold: false });
+  tutorialPanel.update(s.lines, { fontSize: 28, bold: false, bg: 'rgba(10, 25, 80, 1.0)' });
   tutorialNextBtn.setLabel(s.nextLabel || 'NEXT');
 
   const showTarget  = step >= 1;
@@ -1198,8 +1203,8 @@ function applyTutorialStep(step) {
 
   targetFigureGroup.group.visible = showTarget;
   // Position: to the LEFT of the tutorial panel when visible, centred during trials
-  if(showTarget) targetFigureGroup.group.position.set(-1.30, 1.30, -1.50);
-  else           targetFigureGroup.group.position.set(-0.50, 1.30, -1.50);
+  if(showTarget) targetFigureGroup.group.position.set(-1.30, 1.30, -1.30);
+  else           targetFigureGroup.group.position.set(-0.50, 1.30, -1.30);
   tutorialAutoRotate = (step === 1);
   optionsBoard.visible = showOptions;
   submitButton.group.visible = highlightSubmit;
@@ -1243,7 +1248,7 @@ function setTrialElementsVisible(v) {
 function beginPractice() {
   session.currentBlock = 'practice';
   session.trialIndex = 0;
-  targetFigureGroup.group.position.set(-0.50, 1.30, -1.50); // reset from tutorial offset
+  targetFigureGroup.group.position.set(-0.50, 1.30, -1.30); // reset from tutorial offset
   setTrialElementsVisible(true);
   loadTrial(session.practiceTrials[0]);
   hudPanel.update(['Practice', `Trial 1 / ${session.practiceTrials.length}`], { fontSize: 28 });
@@ -1252,7 +1257,7 @@ function beginPractice() {
 function beginBlock(block) {
   session.currentBlock = block;
   session.trialIndex = 0;
-  targetFigureGroup.group.position.set(-0.50, 1.30, -1.50); // ensure centred
+  targetFigureGroup.group.position.set(-0.50, 1.30, -1.30); // ensure centred
   setTrialElementsVisible(true);
   loadTrial(session.blockATrials[0]);
   startTimer(CONFIG.TIME_LIMIT_SECONDS);
@@ -1289,7 +1294,7 @@ function rebuildInteractables() {
 function updateHUD() {
   const t = session.currentTrial;
   if(!t) return;
-  const blockName = session.currentBlock === 'practice' ? 'Practice' : 'Block A';
+  const blockName = session.currentBlock === 'practice' ? 'Practice' : 'Trials';
   const total = currentTrials().length;
   const timerStr = session.currentBlock === 'practice' ? '' : formatTimer(timerSeconds);
   hudPanel.update([`${blockName}  |  Trial ${t.trialNum} / ${total}`, timerStr], { fontSize: 28 });
